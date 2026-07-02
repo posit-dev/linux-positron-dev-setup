@@ -113,6 +113,26 @@ banner() {
   printf '%s%s%s\n' "$ACCENT" "$1" "$RESET" >&2
 }
 
+# boxed_notice <line>...: print the given lines inside a bold box (box-drawing
+# characters) on stderr, in the accent color, sized to the longest line. Used for
+# the final "log out and back in" reminder so it can't be missed in the scroll.
+boxed_notice() {
+  local bold="" line width=0 rule pad
+  if [ -t 2 ]; then bold=$'\033[1m'; fi
+  for line in "$@"; do
+    [ "${#line}" -gt "$width" ] && width=${#line}
+  done
+  rule=$(printf '═%.0s' $(seq 1 $((width + 2))))
+  printf '\n' >&2
+  printf '%s%s╔%s╗%s\n' "$bold" "$ACCENT" "$rule" "$RESET" >&2
+  for line in "$@"; do
+    pad=$((width - ${#line}))
+    printf '%s%s║ %s%*s ║%s\n' "$bold" "$ACCENT" "$line" "$pad" "" "$RESET" >&2
+  done
+  printf '%s%s╚%s╝%s\n' "$bold" "$ACCENT" "$rule" "$RESET" >&2
+  printf '\n' >&2
+}
+
 # have <command>: true if <command> is on PATH.
 have() {
   command -v "$1" >/dev/null 2>&1
@@ -753,6 +773,17 @@ clone_or_fork_positron() {
   fi
 }
 
+# final_notice: the last thing main() does — a prominent boxed reminder to log out
+# and back in, so the new login shell (chsh) and the shell-init/PATH changes take
+# effect in a fresh session.
+final_notice() {
+  boxed_notice \
+    "Setup complete!" \
+    "" \
+    "Log out and log back in (or reboot) so that" \
+    "your new login shell and PATH take effect."
+}
+
 # undo: reverse everything recorded in the manifest, then delete it. Only touches
 # what this script created/installed; leaves pre-existing state untouched. Does
 # not revert apt-get update/upgrade.
@@ -864,6 +895,7 @@ main() {
   install_ssh_server
   configure_zsh_prompt
   clone_or_fork_positron
+  final_notice
 }
 
 case "${1:-}" in
