@@ -19,7 +19,7 @@ set -euo pipefail
 
 # Where to clone the repo and where to clone it from. Override either with the
 # matching env var (handy for forks/branches or a non-default location).
-REPO_URL="${SETUP_REPO_URL:-https://github.com/softwarenerd/linux-positron-dev-setup.git}"
+REPO_URL="${SETUP_REPO_URL:-https://github.com/posit-dev/linux-positron-dev-setup.git}"
 CLONE_DIR="${SETUP_CLONE_DIR:-$HOME/linux-positron-dev-setup}"
 
 # Where to clone Positron from. Cloned over SSH (into a developer-chosen folder

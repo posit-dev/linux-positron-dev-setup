@@ -13,13 +13,13 @@ Run the setup script using `wget` or `curl`.
 For `wget` run:
 
 ```sh
-bash -c "$(wget -qO- https://raw.githubusercontent.com/softwarenerd/linux-positron-dev-setup/main/setup.sh)"
+bash -c "$(wget -qO- https://raw.githubusercontent.com/posit-dev/linux-positron-dev-setup/main/setup.sh)"
 ```
 
 For `curl` run:
 
 ```sh
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/softwarenerd/linux-positron-dev-setup/main/setup.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/posit-dev/linux-positron-dev-setup/main/setup.sh)"
 ```
 
 This downloads each script in full before running it, so a dropped connection can't
@@ -59,6 +59,6 @@ Override these with environment variables if you need to:
 
 | Variable           | Default                                                              | What it controls                          |
 | ------------------ | ------------------------------------------------------------------- | ----------------------------------------- |
-| `SETUP_BASE_URL`   | `…/softwarenerd/linux-positron-dev-setup/main`                      | Where `setup.sh` fetches sibling scripts. |
-| `SETUP_REPO_URL`   | `https://github.com/softwarenerd/linux-positron-dev-setup.git`      | Repo cloned by the setup.                 |
+| `SETUP_BASE_URL`   | `…/posit-dev/linux-positron-dev-setup/main`                      | Where `setup.sh` fetches sibling scripts. |
+| `SETUP_REPO_URL`   | `https://github.com/posit-dev/linux-positron-dev-setup.git`      | Repo cloned by the setup.                 |
 | `SETUP_CLONE_DIR`  | `~/linux-positron-dev-setup`                                         | Where the repo is cloned.                 |

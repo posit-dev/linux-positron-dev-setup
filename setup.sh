@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" && pwd)"
 # into bash (e.g. `curl ... | bash`) on a fresh box that has no git yet. In that
 # case there is no checkout on disk, so the sibling setup-<family>.sh has to be
 # downloaded. Override with SETUP_BASE_URL to test a fork or branch.
-BASE_URL="${SETUP_BASE_URL:-https://raw.githubusercontent.com/softwarenerd/linux-positron-dev-setup/main}"
+BASE_URL="${SETUP_BASE_URL:-https://raw.githubusercontent.com/posit-dev/linux-positron-dev-setup/main}"
 
 die() {
   printf '[setup] error: %s\n' "$*" >&2
