@@ -12,8 +12,9 @@
 #
 # --undo only reverses things THIS script actually did (tracked in a manifest);
 # it never touches pre-existing packages or checkouts, and it does not revert
-# apt-get update/upgrade. Generated SSH keys are deliberately left in place too,
-# since the matching public key may already be registered on GitHub.
+# apt-get update/upgrade. Generated SSH keys — along with any key uploaded to
+# GitHub, the gh login session, and a Positron fork created on your behalf — are
+# deliberately left in place too, since they may already be in use.
 #
 set -euo pipefail
 
@@ -26,9 +27,12 @@ export DEBIAN_FRONTEND=noninteractive
 REPO_URL="${SETUP_REPO_URL:-https://github.com/posit-dev/linux-positron-dev-setup.git}"
 CLONE_DIR="${SETUP_CLONE_DIR:-$HOME/linux-positron-dev-setup}"
 
-# Where to clone Positron from. Cloned over SSH (into a developer-chosen folder
-# under ~/), so it relies on configure_ssh_key having registered a key first.
-POSITRON_URL="${SETUP_POSITRON_URL:-git@github.com:posit-dev/positron.git}"
+# The canonical Positron repo (owner/name) and its SSH clone URL. clone_positron
+# clones this directly for developers with push access and forks it for those
+# without. Both paths rely on configure_github_auth having registered an SSH key
+# and authenticated the gh CLI first.
+POSITRON_REPO="${SETUP_POSITRON_REPO:-posit-dev/positron}"
+POSITRON_URL="${SETUP_POSITRON_URL:-git@github.com:${POSITRON_REPO}.git}"
 
 # Package dependencies installed via apt. Maintain this list as Positron's build
 # requirements change — one package per line for easy diffs.
@@ -501,14 +505,60 @@ install_python() {
     "eval \"\$(pyenv init - $LOGIN_SHELL)\""
 }
 
-# configure_ssh_key: ensure an ed25519 SSH key pair exists. Idempotent — if
-# ~/.ssh/id_ed25519 is already there, leaves it alone. Otherwise generates one
-# non-interactively (no passphrase), labelled with the git email if set. Then
-# shows the public key and points the developer at GitHub to register it.
-configure_ssh_key() {
-  local key="$HOME/.ssh/id_ed25519" comment pub
+# install_gh: install the GitHub CLI (gh), which configure_github_auth and
+# clone_positron use to authenticate, register the SSH key, check repo access,
+# and fork Positron. Idempotent — skips if gh is already on PATH. gh isn't in the
+# default Debian/Ubuntu repos, so we add GitHub's official apt repo (keyring +
+# sources list) and install from it. Both repo files are recorded so --undo
+# removes them; the gh package is recorded for --undo as well.
+install_gh() {
+  banner "Install GitHub CLI"
 
-  banner "Setup SSH Keys"
+  if have gh; then
+    log "GitHub CLI (gh) already installed; skipping."
+    return 0
+  fi
+
+  # curl fetches the signing key over HTTPS; make sure it's present (record only
+  # if we newly add it, for --undo).
+  if ! pkg_installed curl; then
+    log "installing curl..."
+    sudo apt-get install -y curl
+    record "pkg curl"
+  fi
+
+  log "adding GitHub's apt repository..."
+  sudo mkdir -p -m 755 /etc/apt/keyrings
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
+  sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+  record "rmfile /etc/apt/keyrings/githubcli-archive-keyring.gpg"
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+  record "rmfile /etc/apt/sources.list.d/github-cli.list"
+
+  log "installing gh..."
+  sudo apt-get update
+  sudo apt-get install -y gh
+  record "pkg gh"
+  log "GitHub CLI installed."
+}
+
+# configure_github_auth: ensure an ed25519 SSH key exists, authenticate the gh
+# CLI, and register the public key on GitHub. Idempotent throughout — the key is
+# generated only if missing, `gh auth login` runs only when not already
+# authenticated, and the key is uploaded only if GitHub doesn't already have it.
+# We request the admin:public_key scope up front and pass --skip-ssh-key so we
+# register the key ourselves (below) rather than via gh's own login prompt. gh's
+# login reads from /dev/tty so its browser/device-code flow works even when this
+# script is piped in via `curl ... | bash`. The uploaded key and gh session are
+# left in place on --undo (see file header). Must run after install_gh.
+configure_github_auth() {
+  local key="$HOME/.ssh/id_ed25519" comment key_body title pub
+
+  banner "Set Up GitHub Access"
+
+  # An ed25519 key pair (generate if missing), labelled with the git email if set.
   if [ -f "$key" ]; then
     log "SSH key already exists ($key); skipping generation."
   else
@@ -520,27 +570,56 @@ configure_ssh_key() {
     log "SSH key created."
   fi
 
-  pub="$(cat "${key}.pub")"
-  printf '\n' >&2
-  printf 'Your public SSH key (%s.pub):\n\n' "$key" >&2
-  printf '%s\n\n' "$pub" >&2
-  if clip_copy "$pub"; then
-    printf 'It has been copied to your clipboard.\n' >&2
+  # Authenticate gh (idempotent).
+  if gh auth status --hostname github.com >/dev/null 2>&1; then
+    log "already authenticated with GitHub; skipping login."
+  else
+    log "authenticating with GitHub (a browser or device-code prompt follows)..."
+    gh auth login --hostname github.com --git-protocol ssh --skip-ssh-key -s admin:public_key </dev/tty
   fi
-  printf '%sAdd it to GitHub here: %s%shttps://github.com/settings/ssh/new%s\n\n' "$ACCENT" "$RESET" "$CYAN" "$RESET" >&2
-  while ! confirm "Have you added your SSH key to GitHub?"; do
-    printf '%sWell, do it! Add your SSH key to GitHub, then confirm.%s\n' "$ACCENT" "$RESET" >&2
-  done
+  # Use SSH for git operations (so the clone/fork below go over SSH).
+  gh config set git_protocol ssh 2>/dev/null || true
+
+  # Register the public key on GitHub if it isn't already. Match on the key body
+  # (the base64 middle field), which is stable regardless of the comment/title.
+  key_body="$(awk '{print $2}' "${key}.pub")"
+  if gh api user/keys --jq '.[].key' 2>/dev/null | grep -qF "$key_body"; then
+    log "SSH key already registered on GitHub; skipping upload."
+  else
+    title="$(hostname 2>/dev/null || echo positron-dev) (linux-positron-dev-setup)"
+    log "uploading your SSH key to GitHub..."
+    if gh ssh-key add "${key}.pub" --title "$title" 2>/dev/null; then
+      log "SSH key uploaded."
+    else
+      # Fall back to the manual flow if gh can't upload (e.g. an existing login
+      # without the admin:public_key scope).
+      pub="$(cat "${key}.pub")"
+      printf '\n' >&2
+      printf '%sCouldn'\''t upload the key automatically. Add it to GitHub manually:%s\n\n' "$ACCENT" "$RESET" >&2
+      printf '%s\n\n' "$pub" >&2
+      if clip_copy "$pub"; then
+        printf 'It has been copied to your clipboard.\n' >&2
+      fi
+      printf '%sAdd it here: %s%shttps://github.com/settings/ssh/new%s\n\n' "$ACCENT" "$RESET" "$CYAN" "$RESET" >&2
+      while ! confirm "Have you added your SSH key to GitHub?"; do
+        printf '%sWell, do it! Add your SSH key to GitHub, then confirm.%s\n' "$ACCENT" "$RESET" >&2
+      done
+    fi
+  fi
 }
 
 # clone_positron: clone Positron over SSH into a developer-chosen folder under
 # ~/ (e.g. "Work" or "Code"), creating that folder if needed. Runs after
-# configure_ssh_key so the SSH clone can authenticate. Idempotent — skips if the
-# checkout is already there.
+# configure_github_auth so the SSH clone can authenticate and gh can query
+# access. Chooses the clone strategy from the developer's actual push access to
+# $POSITRON_REPO: those with access (Posit employees) clone it directly; those
+# without (external contributors) get a fork cloned instead, with an `upstream`
+# remote wired to $POSITRON_REPO by gh. Idempotent — skips if the checkout is
+# already there.
 clone_positron() {
   banner "Clone Positron"
 
-  local folder parent dest
+  local folder parent dest push
   ask "Which folder under ~/ should Positron go in? (e.g. Work, Code)" folder
   parent="$HOME/$folder"
   dest="$parent/positron"
@@ -562,8 +641,18 @@ clone_positron() {
     record "mkdir $parent"
   fi
 
-  log "cloning $POSITRON_URL into $dest ..."
-  git clone "$POSITRON_URL" "$dest"
+  # .permissions.push is true when the authenticated user can push to the repo.
+  push="$(gh api "repos/$POSITRON_REPO" --jq '.permissions.push' 2>/dev/null || true)"
+  if [ "$push" = "true" ]; then
+    log "you have push access to $POSITRON_REPO; cloning it directly into $dest ..."
+    git clone "$POSITRON_URL" "$dest"
+  else
+    log "you don't have push access to $POSITRON_REPO; forking it and cloning your fork into $dest ..."
+    # gh forks to the developer's account (waiting for GitHub to provision it),
+    # clones the fork as origin, and adds upstream -> $POSITRON_REPO. Args after
+    # -- go to `git clone`, so $dest sets the checkout location.
+    gh repo fork "$POSITRON_REPO" --clone -- "$dest"
+  fi
   record "clone $dest"
   log "cloned. Your Positron checkout is at $dest."
 }
@@ -737,6 +826,11 @@ undo() {
         log "removing cloned repo $dir ..."
         rm -rf "$dir"
         ;;
+      "rmfile "*)
+        file="${line#rmfile }"
+        log "removing $file ..."
+        sudo rm -f "$file" 2>/dev/null || true
+        ;;
     esac
   done <"$MANIFEST"
 
@@ -769,8 +863,9 @@ main() {
   configure_shell
   install_node
   install_python
-  configure_ssh_key
   configure_git_identity
+  install_gh
+  configure_github_auth
   clone_positron
   install_vscode
   install_ssh_server
