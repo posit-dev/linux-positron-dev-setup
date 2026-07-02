@@ -35,7 +35,8 @@ for git). The scripts are idempotent, so re-running is safe.
 - Optionally upgrades installed packages within the current release (keeping the
   box on the same Debian/Ubuntu version).
 - Installs all package dependencies.
-- Optionally switches your login shell to Zsh (the default shell on macOS).
+- Optionally switches your login shell to Zsh (the default shell on macOS), and,
+  if you do, optionally installs [oh-my-zsh](https://ohmyz.sh) on top of it.
 - Installs Node.js via [fnm](https://github.com/Schniz/fnm) and sets it as the
   default.
 - Installs Python via [pyenv](https://github.com/pyenv/pyenv) and sets it as the
@@ -48,6 +49,9 @@ for git). The scripts are idempotent, so re-running is safe.
 - Clones Positron over SSH into a folder you choose under `~/` (skipped if it's
   already there).
 - Optionally installs Visual Studio Code.
+- Optionally installs and enables the OpenSSH server so the machine accepts
+  incoming SSH connections (e.g. for VS Code Remote - SSH).
+- If you're using Zsh with oh-my-zsh, sets a custom shell prompt.
 
 ## Configuration
 
