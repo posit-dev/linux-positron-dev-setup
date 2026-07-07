@@ -189,6 +189,123 @@ ask_default() {
   printf -v "$__var" '%s' "$reply"
 }
 
+# clip_copy <text>: copy <text> to the system clipboard if a clipboard tool is
+# available (Wayland's wl-copy, or X11's xclip/xsel). Returns non-zero if none
+# is present so callers can fall back gracefully.
+clip_copy() {
+  if have wl-copy; then
+    printf '%s' "$1" | wl-copy
+  elif have xclip; then
+    printf '%s' "$1" | xclip -selection clipboard
+  elif have xsel; then
+    printf '%s' "$1" | xsel --clipboard --input
+  else
+    return 1
+  fi
+}
+
+# add_shell_init <tag> <line>...: append a marker-delimited block of shell-init
+# lines to $SHELL_RC so a tool (pyenv, fnm, ...) loads in future interactive
+# shells. Idempotent by <tag>, and recorded for --undo, which removes the block
+# by its markers. <tag> names the tool so blocks are individually identifiable.
+add_shell_init() {
+  local tag="$1"; shift
+  local rc="$SHELL_RC"
+  if [ -f "$rc" ] && grep -q "linux-positron-dev-setup: $tag" "$rc"; then
+    log "$tag shell init already present in $rc; skipping."
+    return 0
+  fi
+  log "adding $tag shell init to $rc ..."
+  {
+    printf '\n# >>> linux-positron-dev-setup: %s >>>\n' "$tag"
+    printf '%s\n' "$@"
+    printf '# <<< linux-positron-dev-setup: %s <<<\n' "$tag"
+  } >>"$rc"
+  record "shellinit $rc"
+}
+
+# set_shell_vars <shell-path>: derive LOGIN_SHELL and SHELL_RC from a login shell
+# path (e.g. /usr/bin/zsh) so shell-init steps target the right file with the
+# right syntax. Falls back to bash/~/.bashrc for anything we don't specifically
+# handle, since that's what pyenv init we emit expects.
+set_shell_vars() {
+  case "$(basename "$1")" in
+    zsh)  LOGIN_SHELL="zsh";  SHELL_RC="$HOME/.zshrc" ;;
+    bash) LOGIN_SHELL="bash"; SHELL_RC="$HOME/.bashrc" ;;
+    *)
+      log "unrecognized login shell '$1'; wiring shell init into ~/.bashrc as a fallback."
+      LOGIN_SHELL="bash"; SHELL_RC="$HOME/.bashrc"
+      ;;
+  esac
+}
+
+# install_oh_my_zsh: optionally install the oh-my-zsh framework on top of zsh.
+# Only reached from configure_shell's zsh path, so zsh is guaranteed present.
+# Idempotent — skips if ~/.oh-my-zsh already exists. Runs the official installer
+# unattended so it doesn't try to chsh (we already did) or exec a login zsh
+# (which would hijack this script). The installer creates ~/.zshrc from its
+# template, backing up any existing one to ~/.zshrc.pre-oh-my-zsh; because this
+# runs before the tool-init steps, their shell init is appended afterwards.
+# Recorded for --undo, which removes ~/.oh-my-zsh and restores the backup.
+install_oh_my_zsh() {
+  if [ -d "$HOME/.oh-my-zsh" ]; then
+    log "oh-my-zsh already installed ($HOME/.oh-my-zsh); skipping."
+    return 0
+  fi
+
+  if ! confirm "Install oh-my-zsh?"; then
+    log "skipping oh-my-zsh install."
+    return 0
+  fi
+
+  # The installer fetches over HTTPS; make sure curl is present (record only if
+  # we newly add it, for --undo).
+  if ! pkg_installed curl; then
+    log "installing curl..."
+    sudo dnf install -y curl
+    record "pkg curl"
+  fi
+
+  log "installing oh-my-zsh ..."
+  # --unattended sets CHSH=no and RUNZSH=no: don't change the login shell (we
+  # already did) and don't drop into a new zsh at the end.
+  sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+  record "omz"
+  log "oh-my-zsh installed."
+}
+
+# positron_parent_dir: prompt for a folder under ~/ (e.g. "Work" or "Code"),
+# create it if missing (recorded for --undo), and echo it. Shared by the clone
+# and fork paths, which put each repo checkout directly inside it.
+positron_parent_dir() {
+  local folder parent
+  ask "Which folder under ~/ should the repos go in? (e.g. Work, Code)" folder
+  parent="$HOME/$folder"
+  if [ ! -d "$parent" ]; then
+    log "creating $parent ..."
+    mkdir -p "$parent"
+    record "mkdir $parent"
+  fi
+  printf '%s\n' "$parent"
+}
+
+# clone_repo <url> <dest>: clone <url> into <dest> over SSH, unless a checkout is
+# already there. Idempotent and recorded for --undo.
+clone_repo() {
+  local url="$1" dest="$2"
+  if [ -d "$dest/.git" ]; then
+    log "already cloned at $dest; skipping."
+    return 0
+  fi
+  if [ -e "$dest" ]; then
+    log "WARNING: $dest exists but isn't a git checkout; skipping."
+    return 0
+  fi
+  log "cloning $url into $dest ..."
+  git clone "$url" "$dest"
+  record "clone $dest"
+}
+
 # --- steps ------------------------------------------------------------------
 
 # refresh_index: refresh dnf's package metadata cache so installs resolve to the
@@ -243,56 +360,6 @@ install_deps() {
   log "package dependencies installed."
 }
 
-# clip_copy <text>: copy <text> to the system clipboard if a clipboard tool is
-# available (Wayland's wl-copy, or X11's xclip/xsel). Returns non-zero if none
-# is present so callers can fall back gracefully.
-clip_copy() {
-  if have wl-copy; then
-    printf '%s' "$1" | wl-copy
-  elif have xclip; then
-    printf '%s' "$1" | xclip -selection clipboard
-  elif have xsel; then
-    printf '%s' "$1" | xsel --clipboard --input
-  else
-    return 1
-  fi
-}
-
-# add_shell_init <tag> <line>...: append a marker-delimited block of shell-init
-# lines to $SHELL_RC so a tool (pyenv, fnm, ...) loads in future interactive
-# shells. Idempotent by <tag>, and recorded for --undo, which removes the block
-# by its markers. <tag> names the tool so blocks are individually identifiable.
-add_shell_init() {
-  local tag="$1"; shift
-  local rc="$SHELL_RC"
-  if [ -f "$rc" ] && grep -q "linux-positron-dev-setup: $tag" "$rc"; then
-    log "$tag shell init already present in $rc; skipping."
-    return 0
-  fi
-  log "adding $tag shell init to $rc ..."
-  {
-    printf '\n# >>> linux-positron-dev-setup: %s >>>\n' "$tag"
-    printf '%s\n' "$@"
-    printf '# <<< linux-positron-dev-setup: %s <<<\n' "$tag"
-  } >>"$rc"
-  record "shellinit $rc"
-}
-
-# set_shell_vars <shell-path>: derive LOGIN_SHELL and SHELL_RC from a login shell
-# path (e.g. /usr/bin/zsh) so shell-init steps target the right file with the
-# right syntax. Falls back to bash/~/.bashrc for anything we don't specifically
-# handle, since that's what pyenv init we emit expects.
-set_shell_vars() {
-  case "$(basename "$1")" in
-    zsh)  LOGIN_SHELL="zsh";  SHELL_RC="$HOME/.zshrc" ;;
-    bash) LOGIN_SHELL="bash"; SHELL_RC="$HOME/.bashrc" ;;
-    *)
-      log "unrecognized login shell '$1'; wiring shell init into ~/.bashrc as a fallback."
-      LOGIN_SHELL="bash"; SHELL_RC="$HOME/.bashrc"
-      ;;
-  esac
-}
-
 # configure_shell: optionally switch the developer's login shell to Zsh. Our
 # developers work on macOS (where Zsh is the default), so offer it here. Installs
 # zsh, makes it the login shell via chsh, and points $SHELL_RC/$LOGIN_SHELL at
@@ -334,41 +401,6 @@ configure_shell() {
   # zsh is now present (we installed it or it was already there), so offer
   # oh-my-zsh on top of it.
   install_oh_my_zsh
-}
-
-# install_oh_my_zsh: optionally install the oh-my-zsh framework on top of zsh.
-# Only reached from configure_shell's zsh path, so zsh is guaranteed present.
-# Idempotent — skips if ~/.oh-my-zsh already exists. Runs the official installer
-# unattended so it doesn't try to chsh (we already did) or exec a login zsh
-# (which would hijack this script). The installer creates ~/.zshrc from its
-# template, backing up any existing one to ~/.zshrc.pre-oh-my-zsh; because this
-# runs before the tool-init steps, their shell init is appended afterwards.
-# Recorded for --undo, which removes ~/.oh-my-zsh and restores the backup.
-install_oh_my_zsh() {
-  if [ -d "$HOME/.oh-my-zsh" ]; then
-    log "oh-my-zsh already installed ($HOME/.oh-my-zsh); skipping."
-    return 0
-  fi
-
-  if ! confirm "Install oh-my-zsh?"; then
-    log "skipping oh-my-zsh install."
-    return 0
-  fi
-
-  # The installer fetches over HTTPS; make sure curl is present (record only if
-  # we newly add it, for --undo).
-  if ! pkg_installed curl; then
-    log "installing curl..."
-    sudo dnf install -y curl
-    record "pkg curl"
-  fi
-
-  log "installing oh-my-zsh ..."
-  # --unattended sets CHSH=no and RUNZSH=no: don't change the login shell (we
-  # already did) and don't drop into a new zsh at the end.
-  sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
-  record "omz"
-  log "oh-my-zsh installed."
 }
 
 # install_node: install fnm (Fast Node Manager) and the pinned Node.js
@@ -654,38 +686,6 @@ configure_zsh_prompt() {
   add_shell_init "zsh-prompt" \
     'PROMPT='\''[%m]%{$fg_bold[green]%}%p %{$fg[cyan]%}[%~]%{$reset_color%} $(git_prompt_info)%{$fg_bold[blue]%}% %{$reset_color%}'\'''
   log "custom zsh prompt written to $SHELL_RC."
-}
-
-# positron_parent_dir: prompt for a folder under ~/ (e.g. "Work" or "Code"),
-# create it if missing (recorded for --undo), and echo it. Shared by the clone
-# and fork paths, which put each repo checkout directly inside it.
-positron_parent_dir() {
-  local folder parent
-  ask "Which folder under ~/ should the repos go in? (e.g. Work, Code)" folder
-  parent="$HOME/$folder"
-  if [ ! -d "$parent" ]; then
-    log "creating $parent ..."
-    mkdir -p "$parent"
-    record "mkdir $parent"
-  fi
-  printf '%s\n' "$parent"
-}
-
-# clone_repo <url> <dest>: clone <url> into <dest> over SSH, unless a checkout is
-# already there. Idempotent and recorded for --undo.
-clone_repo() {
-  local url="$1" dest="$2"
-  if [ -d "$dest/.git" ]; then
-    log "already cloned at $dest; skipping."
-    return 0
-  fi
-  if [ -e "$dest" ]; then
-    log "WARNING: $dest exists but isn't a git checkout; skipping."
-    return 0
-  fi
-  log "cloning $url into $dest ..."
-  git clone "$url" "$dest"
-  record "clone $dest"
 }
 
 # clone_positron: for Positron core developers. Offers (one Y/n per repo) to clone
