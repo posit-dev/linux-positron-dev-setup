@@ -88,15 +88,15 @@ else
   RESET=""
 fi
 
-# log <message>: timestamped progress line on stderr.
+# log <message>: progress line on stderr, prefixed with [setup].
 log() {
   printf '[setup] %s\n' "$*" >&2
 }
 
 # banner <title>: blank line + full-width rule + title, on stderr, in the accent
-# color. Used
-# to set off each interactive prompt so it's easy to spot. The rule uses the box-
-# drawing character U+2500 and spans the terminal width (falling back to 40).
+# color. Used to set off each interactive prompt so it's easy to spot. The rule
+# uses the box-drawing character U+2500 and spans the terminal width (falling
+# back to 40).
 banner() {
   local width line
   width=$(tput cols 2>/dev/null) || width=40
