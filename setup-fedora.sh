@@ -415,6 +415,10 @@ configure_zsh_prompt() {
   [ "$LOGIN_SHELL" = zsh ] || return 0
   [ -d "$HOME/.oh-my-zsh" ] || return 0
   banner "Configure Zsh Prompt"
+  if ! confirm "Configure a custom Zsh prompt?"; then
+    log "skipping zsh prompt configuration."
+    return 0
+  fi
   add_shell_init "zsh-prompt" \
     'PROMPT='\''[%m]%{$fg_bold[green]%}%p %{$fg[cyan]%}[%~]%{$reset_color%} $(git_prompt_info)%{$fg_bold[blue]%}% %{$reset_color%}'\'''
   log "custom zsh prompt written to $SHELL_RC."
