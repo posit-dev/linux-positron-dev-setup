@@ -885,8 +885,9 @@ main() {
   configure_shell
   install_node
   install_python
-  configure_ssh_key
+  # Identity before the SSH key, so the key is labelled with the git email.
   configure_git_identity
+  configure_ssh_key
   install_vscode
   install_ssh_server
   configure_zsh_prompt
