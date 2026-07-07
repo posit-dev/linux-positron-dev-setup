@@ -17,11 +17,6 @@
 #
 set -euo pipefail
 
-# Where to clone the repo and where to clone it from. Override either with the
-# matching env var (handy for forks/branches or a non-default location).
-REPO_URL="${SETUP_REPO_URL:-https://github.com/posit-dev/linux-positron-dev-setup.git}"
-CLONE_DIR="${SETUP_CLONE_DIR:-$HOME/linux-positron-dev-setup}"
-
 # Where to clone Positron from. Cloned over SSH (into a developer-chosen folder
 # under ~/), so it relies on configure_ssh_key having registered a key first.
 POSITRON_URL="${SETUP_POSITRON_URL:-git@github.com:posit-dev/positron.git}"
@@ -74,8 +69,7 @@ LOGIN_SHELL="bash"
 SHELL_RC="$HOME/.bashrc"
 
 # Manifest of what this run actually created/installed, so `--undo` can revert
-# precisely without disturbing anything that pre-existed. Lives outside CLONE_DIR
-# (in XDG state) so undo can safely remove the checkout without deleting itself.
+# precisely without disturbing anything that pre-existed. Lives in XDG state.
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/linux-positron-dev-setup"
 MANIFEST="$STATE_DIR/manifest"
 
