@@ -401,6 +401,23 @@ configure_shell() {
   install_oh_my_zsh
 }
 
+# configure_zsh_prompt: if zsh is the login shell and oh-my-zsh is installed,
+# append a custom PROMPT as a shell-init block of ~/.zshrc. Runs right after
+# configure_shell so the block lands after oh-my-zsh's own config (which sets the
+# theme's prompt), letting our PROMPT win. The later tool-init blocks (fnm,
+# pyenv) are appended below it but don't touch PROMPT, so it stays the effective
+# prompt. The prompt uses oh-my-zsh helpers ($fg, git_prompt_info), so we only
+# add it when oh-my-zsh is present; otherwise the developer manages their own
+# prompt. Idempotent and undo-aware via add_shell_init.
+configure_zsh_prompt() {
+  [ "$LOGIN_SHELL" = zsh ] || return 0
+  [ -d "$HOME/.oh-my-zsh" ] || return 0
+  banner "Configure Zsh Prompt"
+  add_shell_init "zsh-prompt" \
+    'PROMPT='\''[%m]%{$fg_bold[green]%}%p %{$fg[cyan]%}[%~]%{$reset_color%} $(git_prompt_info)%{$fg_bold[blue]%}% %{$reset_color%}'\'''
+  log "custom zsh prompt written to $SHELL_RC."
+}
+
 # install_node: install fnm (Fast Node Manager) and the pinned Node.js
 # ($NODE_VERSION), then set it as the default. fnm is the current recommendation
 # for managing Node versions. Idempotent — skips the fnm install and the version
@@ -530,6 +547,33 @@ install_python() {
     "eval \"\$(pyenv init - $LOGIN_SHELL)\""
 }
 
+# configure_git_identity: ensure git knows who's authoring commits. Always walks
+# the developer through both fields, pre-filling any value that's already set so
+# ENTER keeps it. This is the one place we ask the developer for personal info.
+configure_git_identity() {
+  local cur_name cur_email name email
+  cur_name="$(git config --global user.name || true)"
+  cur_email="$(git config --global user.email || true)"
+
+  banner "Setup Git Identity"
+  log "setting your git identity (used to author your commits)..."
+
+  # Prompt for both, showing any existing value as the default. Only set (and
+  # record for undo) fields that actually change, so we never unset or clobber an
+  # identity the developer already had, and re-running is a no-op.
+  ask_default "Your Git user.name" name "$cur_name"
+  if [ "$name" != "$cur_name" ]; then
+    git config --global user.name "$name"
+    [ -z "$cur_name" ] && record "git-name"
+  fi
+  ask_default "Your Git user.email" email "$cur_email"
+  if [ "$email" != "$cur_email" ]; then
+    git config --global user.email "$email"
+    [ -z "$cur_email" ] && record "git-email"
+  fi
+  log "git identity set to $name <$email>."
+}
+
 # configure_ssh_key: ensure an ed25519 SSH key pair exists. Idempotent — if
 # ~/.ssh/id_ed25519 is already there, leaves it alone. Otherwise generates one
 # non-interactively (no passphrase), labelled with the git email if set. Then
@@ -560,33 +604,6 @@ configure_ssh_key() {
   while ! confirm "Have you added your SSH key to GitHub?"; do
     printf '%sWell, do it! Add your SSH key to GitHub, then confirm.%s\n' "$ACCENT" "$RESET" >&2
   done
-}
-
-# configure_git_identity: ensure git knows who's authoring commits. Always walks
-# the developer through both fields, pre-filling any value that's already set so
-# ENTER keeps it. This is the one place we ask the developer for personal info.
-configure_git_identity() {
-  local cur_name cur_email name email
-  cur_name="$(git config --global user.name || true)"
-  cur_email="$(git config --global user.email || true)"
-
-  banner "Setup Git Identity"
-  log "setting your git identity (used to author your commits)..."
-
-  # Prompt for both, showing any existing value as the default. Only set (and
-  # record for undo) fields that actually change, so we never unset or clobber an
-  # identity the developer already had, and re-running is a no-op.
-  ask_default "Your Git user.name" name "$cur_name"
-  if [ "$name" != "$cur_name" ]; then
-    git config --global user.name "$name"
-    [ -z "$cur_name" ] && record "git-name"
-  fi
-  ask_default "Your Git user.email" email "$cur_email"
-  if [ "$email" != "$cur_email" ]; then
-    git config --global user.email "$email"
-    [ -z "$cur_email" ] && record "git-email"
-  fi
-  log "git identity set to $name <$email>."
 }
 
 # install_vscode: optionally download and install the latest stable VS Code for
@@ -669,21 +686,17 @@ install_ssh_server() {
   log "OpenSSH server is enabled and running."
 }
 
-# configure_zsh_prompt: if zsh is the login shell and oh-my-zsh is installed,
-# append a custom PROMPT as the final shell-init block of ~/.zshrc. Runs after
-# every tool-init step in main() so it lands after every other block (pyenv, fnm,
-# and oh-my-zsh's own config), letting it win as the effective prompt. The prompt
-# uses oh-my-zsh
-# helpers ($fg, git_prompt_info), so we only add it when oh-my-zsh is present;
-# otherwise the developer manages their own prompt. Idempotent and undo-aware via
-# add_shell_init.
-configure_zsh_prompt() {
-  [ "$LOGIN_SHELL" = zsh ] || return 0
-  [ -d "$HOME/.oh-my-zsh" ] || return 0
-  banner "Configure Zsh Prompt"
-  add_shell_init "zsh-prompt" \
-    'PROMPT='\''[%m]%{$fg_bold[green]%}%p %{$fg[cyan]%}[%~]%{$reset_color%} $(git_prompt_info)%{$fg_bold[blue]%}% %{$reset_color%}'\'''
-  log "custom zsh prompt written to $SHELL_RC."
+# clone_or_fork_positron: the final step in main(). Positron core developers clone
+# the repos directly; community contributors fork first. Hands off to the matching
+# step above.
+clone_or_fork_positron() {
+  banner "Clone or Fork Positron"
+  log "Positron core developers can clone the repos directly; the community should fork."
+  if confirm "Are you a Positron core developer? (No forks Positron to your account instead)"; then
+    clone_positron
+  else
+    fork_positron
+  fi
 }
 
 # clone_positron: for Positron core developers. Offers (one Y/n per repo) to clone
@@ -752,19 +765,6 @@ fork_positron() {
   printf '%sGetting started as a community contributor:%s\n' "$ACCENT" "$RESET" >&2
   printf '  Positron:     %s%s%s\n' "$CYAN" "https://github.com/$slug" "$RESET" >&2
   printf '  Contributing: %s%s%s\n\n' "$CYAN" "https://github.com/$slug/blob/main/CONTRIBUTING.md" "$RESET" >&2
-}
-
-# clone_or_fork_positron: the final step in main(). Positron core developers clone
-# the repos directly; community contributors fork first. Hands off to the matching
-# step above.
-clone_or_fork_positron() {
-  banner "Clone or Fork Positron"
-  log "Positron core developers can clone the repos directly; the community should fork."
-  if confirm "Are you a Positron core developer? (No forks Positron to your account instead)"; then
-    clone_positron
-  else
-    fork_positron
-  fi
 }
 
 # final_notice: the last thing main() does — a prominent boxed reminder to log out
@@ -881,6 +881,7 @@ main() {
   maybe_upgrade
   install_deps
   configure_shell
+  configure_zsh_prompt
   install_node
   install_python
   # Identity before the SSH key, so the key is labelled with the git email.
@@ -888,7 +889,6 @@ main() {
   configure_ssh_key
   install_vscode
   install_ssh_server
-  configure_zsh_prompt
   clone_or_fork_positron
   final_notice
 }
