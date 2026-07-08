@@ -29,32 +29,6 @@ That single command detects your distro and installs everything you need for Pos
 development on Linux. The only things it asks you are personal (your name and email,
 for git). The scripts are idempotent, so re-running is safe.
 
-## Undoing the setup
-
-Each run records what it actually installed or created in a per-machine manifest
-(`~/.local/state/linux-positron-dev-setup/manifest`), and `--undo` reverses exactly
-that. Pass it through the same one-liner — note the extra `setup` word, which is a
-placeholder that has to be there (with `bash -c`, the first word after the script
-becomes `$0`, so `--undo` alone would be swallowed and a normal setup would run
-instead):
-
-For `wget` run:
-
-```sh
-bash -c "$(wget -qO- https://raw.githubusercontent.com/posit-dev/linux-positron-dev-setup/main/setup.sh)" setup --undo
-```
-
-For `curl` run:
-
-```sh
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/posit-dev/linux-positron-dev-setup/main/setup.sh)" setup --undo
-```
-
-`--undo` only reverses things a run on *this* machine recorded; it never touches
-packages or checkouts that were already there, and it does not revert
-`apt-get`/`dnf` updates. Generated SSH keys (and any GitHub fork you created) are
-deliberately left in place, since they may already be in use.
-
 ## What it does
 
 - Refreshes the apt package index.
@@ -93,8 +67,7 @@ deliberately left in place, since they may already be in use.
 
 Override these with environment variables if you need to:
 
-| Variable           | Default                                                              | What it controls                          |
-| ------------------ | ------------------------------------------------------------------- | ----------------------------------------- |
-| `SETUP_BASE_URL`   | `…/posit-dev/linux-positron-dev-setup/main`                      | Where `setup.sh` fetches sibling scripts. |
-| `SETUP_REPO_URL`   | `https://github.com/posit-dev/linux-positron-dev-setup.git`      | Repo cloned by the setup.                 |
-| `SETUP_CLONE_DIR`  | `~/linux-positron-dev-setup`                                         | Where the repo is cloned.                 |
+| Variable             | Default                                     | What it controls                          |
+| -------------------- | ------------------------------------------- | ----------------------------------------- |
+| `SETUP_BASE_URL`     | `…/posit-dev/linux-positron-dev-setup/main` | Where `setup.sh` fetches sibling scripts. |
+| `SETUP_POSITRON_URL` | `git@github.com:posit-dev/positron.git`     | Where Positron is cloned from.            |

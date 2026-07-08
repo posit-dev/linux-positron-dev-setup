@@ -8,12 +8,6 @@
 #
 # Usage:
 #   ./setup-debian.sh          run the setup steps
-#   ./setup-debian.sh --undo   revert what a previous run installed/created
-#
-# --undo only reverses things THIS script actually did (tracked in a manifest);
-# it never touches pre-existing packages or checkouts, and it does not revert
-# apt-get update/upgrade. Generated SSH keys are deliberately left in place too,
-# since the matching public key may already be registered on GitHub.
 #
 set -euo pipefail
 
@@ -67,11 +61,6 @@ PYTHON_VERSION="3.12.12"
 # into $SHELL_RC and use $LOGIN_SHELL to pick the right init syntax.
 LOGIN_SHELL="bash"
 SHELL_RC="$HOME/.bashrc"
-
-# Manifest of what this run actually created/installed, so `--undo` can revert
-# precisely without disturbing anything that pre-existed. Lives in XDG state.
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/linux-positron-dev-setup"
-MANIFEST="$STATE_DIR/manifest"
 
 # --- helpers ----------------------------------------------------------------
 
@@ -137,13 +126,6 @@ pkg_installed() {
   dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'ok installed'
 }
 
-# record <line>: append an action record to the manifest so --undo can reverse
-# it later. Creates the state dir on first use.
-record() {
-  mkdir -p "$STATE_DIR"
-  printf '%s\n' "$1" >>"$MANIFEST"
-}
-
 # confirm <prompt>: ask a yes/no question, defaulting to Yes so the developer can
 # hit ENTER to proceed through the steps. Reads from the terminal (/dev/tty)
 # rather than stdin, so the prompt still works when the script is piped in via
@@ -206,8 +188,8 @@ clip_copy() {
 
 # add_shell_init <tag> <line>...: append a marker-delimited block of shell-init
 # lines to $SHELL_RC so a tool (pyenv, fnm, ...) loads in future interactive
-# shells. Idempotent by <tag>, and recorded for --undo, which removes the block
-# by its markers. <tag> names the tool so blocks are individually identifiable.
+# shells. Idempotent by <tag>. <tag> names the tool so blocks are individually
+# identifiable.
 add_shell_init() {
   local tag="$1"; shift
   local rc="$SHELL_RC"
@@ -221,7 +203,6 @@ add_shell_init() {
     printf '%s\n' "$@"
     printf '# <<< linux-positron-dev-setup: %s <<<\n' "$tag"
   } >>"$rc"
-  record "shellinit $rc"
 }
 
 # set_shell_vars <shell-path>: derive LOGIN_SHELL and SHELL_RC from a login shell
@@ -246,7 +227,6 @@ set_shell_vars() {
 # (which would hijack this script). The installer creates ~/.zshrc from its
 # template, backing up any existing one to ~/.zshrc.pre-oh-my-zsh; because this
 # runs before the tool-init steps, their shell init is appended afterwards.
-# Recorded for --undo, which removes ~/.oh-my-zsh and restores the backup.
 install_oh_my_zsh() {
   if [ -d "$HOME/.oh-my-zsh" ]; then
     log "oh-my-zsh already installed ($HOME/.oh-my-zsh); skipping."
@@ -258,25 +238,22 @@ install_oh_my_zsh() {
     return 0
   fi
 
-  # The installer fetches over HTTPS; make sure curl is present (record only if
-  # we newly add it, for --undo).
+  # The installer fetches over HTTPS; make sure curl is present.
   if ! pkg_installed curl; then
     log "installing curl..."
     sudo apt-get install -y curl
-    record "pkg curl"
   fi
 
   log "installing oh-my-zsh ..."
   # --unattended sets CHSH=no and RUNZSH=no: don't change the login shell (we
   # already did) and don't drop into a new zsh at the end.
   sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
-  record "omz"
   log "oh-my-zsh installed."
 }
 
 # positron_parent_dir: prompt for a folder under ~/ (e.g. "Work" or "Code"),
-# create it if missing (recorded for --undo), and echo it. Shared by the clone
-# and fork paths, which put each repo checkout directly inside it.
+# create it if missing, and echo it. Shared by the clone and fork paths, which
+# put each repo checkout directly inside it.
 positron_parent_dir() {
   local folder parent
   ask "Which folder under ~/ should the repos go in? (e.g. Work, Code)" folder
@@ -284,13 +261,12 @@ positron_parent_dir() {
   if [ ! -d "$parent" ]; then
     log "creating $parent ..."
     mkdir -p "$parent"
-    record "mkdir $parent"
   fi
   printf '%s\n' "$parent"
 }
 
 # clone_repo <url> <dest>: clone <url> into <dest> over SSH, unless a checkout is
-# already there. Idempotent and recorded for --undo.
+# already there. Idempotent.
 clone_repo() {
   local url="$1" dest="$2"
   if [ -d "$dest/.git" ]; then
@@ -303,7 +279,6 @@ clone_repo() {
   fi
   log "cloning $url into $dest ..."
   git clone "$url" "$dest"
-  record "clone $dest"
 }
 
 # --- steps ------------------------------------------------------------------
@@ -342,19 +317,8 @@ install_deps() {
     return 0
   fi
 
-  # Note which packages aren't installed yet, so --undo removes only those and
-  # leaves anything that was already present alone.
-  local pkg new=()
-  for pkg in "${PACKAGES[@]}"; do
-    pkg_installed "$pkg" || new+=("$pkg")
-  done
-
   log "installing package dependencies (${#PACKAGES[@]} packages)..."
   sudo apt-get install -y "${PACKAGES[@]}"
-
-  for pkg in "${new[@]:-}"; do
-    [ -n "$pkg" ] && record "pkg $pkg"
-  done
   log "package dependencies installed."
 }
 
@@ -380,16 +344,13 @@ configure_shell() {
   if ! pkg_installed zsh; then
     log "installing zsh..."
     sudo apt-get install -y zsh
-    record "pkg zsh"
   fi
 
   # Switch the login shell with sudo chsh so it doesn't prompt for a password.
-  # Record the previous shell so --undo can restore it.
   zsh_path="$(command -v zsh)"
   if [ "$old_shell" != "$zsh_path" ]; then
     log "setting your login shell to $zsh_path ..."
     sudo chsh -s "$zsh_path" "$user"
-    record "shell $old_shell"
   else
     log "login shell is already $zsh_path; skipping."
   fi
@@ -408,7 +369,7 @@ configure_shell() {
 # pyenv) are appended below it but don't touch PROMPT, so it stays the effective
 # prompt. The prompt uses oh-my-zsh helpers ($fg, git_prompt_info), so we only
 # add it when oh-my-zsh is present; otherwise the developer manages their own
-# prompt. Idempotent and undo-aware via add_shell_init.
+# prompt. Idempotent via add_shell_init.
 configure_zsh_prompt() {
   [ "$LOGIN_SHELL" = zsh ] || return 0
   [ -d "$HOME/.oh-my-zsh" ] || return 0
@@ -436,27 +397,24 @@ install_node() {
   fi
 
   # fnm's installer fetches and unpacks a release zip over HTTPS, so make sure
-  # curl and unzip exist. Record only what we newly add, for --undo.
+  # curl and unzip exist. Install only what's missing.
   local dep
   for dep in curl unzip; do
     if ! pkg_installed "$dep"; then
       log "installing $dep..."
       sudo apt-get install -y "$dep"
-      record "pkg $dep"
     fi
   done
 
   # fnm itself, into ~/.fnm (both the binary and, via $FNM_DIR, the installed
-  # Node versions, so --undo can remove everything by deleting one directory).
-  # --skip-shell so we control the shell wiring ourselves (via add_shell_init),
-  # consistent with pyenv.
+  # Node versions, all under one directory). --skip-shell so we control the
+  # shell wiring ourselves (via add_shell_init), consistent with pyenv.
   local fnm_dir="$HOME/.fnm"
   if [ -x "$fnm_dir/fnm" ]; then
     log "fnm already installed ($fnm_dir); skipping."
   else
     log "installing fnm into $fnm_dir ..."
     curl -fsSL https://fnm.vercel.app/install | bash -s -- --install-dir "$fnm_dir" --skip-shell
-    record "fnm-root $fnm_dir"
   fi
 
   # Make fnm usable for the rest of this script.
@@ -481,7 +439,6 @@ install_node() {
   else
     log "installing Node.js $NODE_VERSION with fnm..."
     fnm install "$NODE_VERSION"
-    record "fnm-version $NODE_VERSION"
   fi
   fnm default "$NODE_VERSION"
   log "fnm default Node.js set to $NODE_VERSION."
@@ -501,8 +458,7 @@ install_python() {
   fi
 
   # Packages needed to compile CPython from source (the pyenv "suggested build
-  # environment"). Only the ones not already present are recorded, so --undo
-  # removes just what we added.
+  # environment"). Install them only when some are missing.
   local build_deps=(
     make build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev
     libsqlite3-dev wget curl llvm libncursesw5-dev xz-utils tk-dev
@@ -515,7 +471,6 @@ install_python() {
   if [ "${#new[@]}" -gt 0 ]; then
     log "installing ${#new[@]} pyenv build dependencies..."
     sudo apt-get install -y "${build_deps[@]}"
-    for pkg in "${new[@]}"; do record "pkg $pkg"; done
   fi
 
   # pyenv itself, into ~/.pyenv.
@@ -525,7 +480,6 @@ install_python() {
   else
     log "installing pyenv into $pyenv_root ..."
     git clone --depth 1 https://github.com/pyenv/pyenv.git "$pyenv_root"
-    record "pyenv-root $pyenv_root"
   fi
 
   # Make pyenv usable for the rest of this script.
@@ -539,7 +493,6 @@ install_python() {
   else
     log "building Python $PYTHON_VERSION with pyenv (this can take a few minutes)..."
     pyenv install "$PYTHON_VERSION"
-    record "pyenv-version $PYTHON_VERSION"
   fi
   pyenv global "$PYTHON_VERSION"
   log "pyenv global Python set to $PYTHON_VERSION."
@@ -562,18 +515,16 @@ configure_git_identity() {
   banner "Setup Git Identity"
   log "setting your git identity (used to author your commits)..."
 
-  # Prompt for both, showing any existing value as the default. Only set (and
-  # record for undo) fields that actually change, so we never unset or clobber an
-  # identity the developer already had, and re-running is a no-op.
+  # Prompt for both, showing any existing value as the default. Only set fields
+  # that actually change, so we never clobber an identity the developer already
+  # had, and re-running is a no-op.
   ask_default "Your Git user.name" name "$cur_name"
   if [ "$name" != "$cur_name" ]; then
     git config --global user.name "$name"
-    [ -z "$cur_name" ] && record "git-name"
   fi
   ask_default "Your Git user.email" email "$cur_email"
   if [ "$email" != "$cur_email" ]; then
     git config --global user.email "$email"
-    [ -z "$cur_email" ] && record "git-email"
   fi
   log "git identity set to $name <$email>."
 }
@@ -613,7 +564,7 @@ configure_ssh_key() {
 # install_vscode: optionally download and install the latest stable VS Code for
 # arm64 from Microsoft. Downloads the .deb into ~/Downloads, then installs it with
 # apt-get (which resolves any dependencies). Idempotent — skips if `code` is
-# already installed. Recorded for --undo only when we newly install it.
+# already installed.
 install_vscode() {
   banner "Install Visual Studio Code"
 
@@ -630,12 +581,10 @@ install_vscode() {
     return 0
   fi
 
-  # curl fetches the .deb over HTTPS; make sure it's present (record only if we
-  # newly add it, for --undo).
+  # curl fetches the .deb over HTTPS; make sure it's present.
   if ! pkg_installed curl; then
     log "installing curl..."
     sudo apt-get install -y curl
-    record "pkg curl"
   fi
 
   # Download the latest stable arm64 build into ~/Downloads. The URL redirects to
@@ -658,15 +607,13 @@ install_vscode() {
 
   log "installing $(basename "$deb") ..."
   sudo apt-get install -y "$deb"
-  record "pkg code"
   log "Visual Studio Code installed."
 }
 
 # install_ssh_server: optionally install and enable the OpenSSH server so the
 # machine accepts incoming SSH connections (e.g. for VS Code Remote - SSH).
 # Idempotent — the apt-get install is a no-op if openssh-server is already
-# present, and `systemctl enable --now` is safe to re-run. Recorded for --undo
-# only when we newly install the package.
+# present, and `systemctl enable --now` is safe to re-run.
 install_ssh_server() {
   banner "Enable SSH server"
 
@@ -678,7 +625,6 @@ install_ssh_server() {
   if ! pkg_installed openssh-server; then
     log "installing openssh-server..."
     sudo apt-get install -y openssh-server
-    record "pkg openssh-server"
   else
     log "openssh-server already installed."
   fi
@@ -686,13 +632,11 @@ install_ssh_server() {
   # Enable the service and start it now. On Debian/Ubuntu the unit is named ssh.
   log "enabling and starting the ssh service..."
   sudo systemctl enable --now ssh
-  record "service ssh"
   log "OpenSSH server is enabled and running."
 }
 
-# clone_or_fork_positron: the final step in main(). Positron core developers clone
-# the repos directly; community contributors fork first. Hands off to the matching
-# step above.
+# clone_or_fork_positron: Positron core developers clone the repos directly;
+# community contributors fork first. Hands off to the matching step below.
 clone_or_fork_positron() {
   banner "Clone or Fork Positron"
   log "Positron core developers can clone the repos directly; the community should fork."
@@ -727,8 +671,7 @@ clone_positron() {
 # fork_positron: for community contributors without push access. Points the
 # developer at GitHub to create their own fork in the browser, then clones that
 # fork over SSH (as origin) and adds the canonical repo as an `upstream` remote so
-# they can pull updates. The fork on GitHub is left in place on --undo, like
-# generated SSH keys.
+# they can pull updates.
 fork_positron() {
   banner "Fork Positron"
 
@@ -782,101 +725,6 @@ final_notice() {
     "your new login shell and PATH take effect."
 }
 
-# undo: reverse everything recorded in the manifest, then delete it. Only touches
-# what this script created/installed; leaves pre-existing state untouched. Does
-# not revert apt-get update/upgrade.
-undo() {
-  banner "Undo Linux Positron Dev Setup"
-  if [ ! -f "$MANIFEST" ]; then
-    log "no manifest found ($MANIFEST); nothing to undo."
-    return 0
-  fi
-
-  local line dir ver file old_shell svc pkgs=() dirs=()
-  while IFS= read -r line; do
-    case "$line" in
-      "pkg "*) pkgs+=("${line#pkg }") ;;
-      "mkdir "*) dirs+=("${line#mkdir }") ;;
-      "service "*)
-        svc="${line#service }"
-        log "disabling and stopping the $svc service ..."
-        sudo systemctl disable --now "$svc" 2>/dev/null || true
-        ;;
-      "omz")
-        log "removing oh-my-zsh ..."
-        rm -rf "$HOME/.oh-my-zsh"
-        if [ -f "$HOME/.zshrc.pre-oh-my-zsh" ]; then
-          log "restoring pre-oh-my-zsh ~/.zshrc ..."
-          mv -f "$HOME/.zshrc.pre-oh-my-zsh" "$HOME/.zshrc"
-        fi
-        ;;
-      "git-name")
-        log "unsetting git user.name ..."
-        git config --global --unset user.name || true
-        ;;
-      "git-email")
-        log "unsetting git user.email ..."
-        git config --global --unset user.email || true
-        ;;
-      "shell "*)
-        old_shell="${line#shell }"
-        log "restoring login shell to $old_shell ..."
-        sudo chsh -s "$old_shell" "$(id -un)" 2>/dev/null || true
-        ;;
-      "pyenv-version "*)
-        ver="${line#pyenv-version }"
-        log "uninstalling pyenv Python $ver ..."
-        PYENV_ROOT="$HOME/.pyenv" PATH="$HOME/.pyenv/bin:$PATH" \
-          pyenv uninstall -f "$ver" 2>/dev/null || true
-        ;;
-      "pyenv-root "*)
-        dir="${line#pyenv-root }"
-        log "removing pyenv ($dir) ..."
-        rm -rf "$dir"
-        ;;
-      "fnm-version "*)
-        ver="${line#fnm-version }"
-        log "uninstalling Node.js $ver ..."
-        FNM_DIR="$HOME/.fnm" PATH="$HOME/.fnm:$PATH" \
-          fnm uninstall "$ver" 2>/dev/null || true
-        ;;
-      "fnm-root "*)
-        dir="${line#fnm-root }"
-        log "removing fnm ($dir) ..."
-        rm -rf "$dir"
-        ;;
-      "shellinit "*)
-        file="${line#shellinit }"
-        log "removing our shell init from $file ..."
-        sed -i '/# >>> linux-positron-dev-setup: /,/# <<< linux-positron-dev-setup: /d' "$file" 2>/dev/null || true
-        ;;
-      "clone "*)
-        dir="${line#clone }"
-        log "removing cloned repo $dir ..."
-        rm -rf "$dir"
-        ;;
-    esac
-  done <"$MANIFEST"
-
-  if [ "${#pkgs[@]}" -gt 0 ]; then
-    log "purging ${#pkgs[@]} packages that setup installed..."
-    sudo apt-get purge -y "${pkgs[@]}"
-    sudo apt-get autoremove -y
-  fi
-
-  # Remove folders we created, last, so any checkouts inside them (removed above)
-  # are already gone. rmdir only deletes empty dirs, so a folder the developer
-  # later put other work in is left untouched.
-  for dir in "${dirs[@]:-}"; do
-    [ -n "$dir" ] || continue
-    rmdir "$dir" 2>/dev/null && log "removed $dir" || true
-  done
-
-  rm -f "$MANIFEST"
-  rmdir "$STATE_DIR" 2>/dev/null || true
-  log "undo complete."
-}
-
 # --- main -------------------------------------------------------------------
 
 main() {
@@ -899,7 +747,6 @@ main() {
 
 case "${1:-}" in
   ""|--setup) main ;;
-  --undo) undo ;;
-  -h|--help) printf 'usage: %s [--undo]\n' "$0" ;;
-  *) printf 'unknown option: %s\nusage: %s [--undo]\n' "$1" "$0" >&2; exit 2 ;;
+  -h|--help) printf 'usage: %s\n' "$0" ;;
+  *) printf 'unknown option: %s\nusage: %s\n' "$1" "$0" >&2; exit 2 ;;
 esac
